@@ -33,7 +33,9 @@ type Server struct {
 	cmdLock sync.RWMutex
 	cmds    map[string]*exec.Cmd
 
-	sshdConfig SshdConfig
+	authorizedKeys []ssh.PublicKey
+
+	config *config.SshConfig
 }
 
 func (s *Server) AddCmd(id string, cmd *exec.Cmd) {
@@ -56,43 +58,39 @@ func (s *Server) RemoveCmd(id string) (*exec.Cmd, bool) {
 func New(ctx context.Context, cfg *config.SshConfig) (*Server, error) {
 	sv := &Server{
 		ctx:               ctx,
+		config:            cfg,
 		keepAliveInterval: time.Duration(cfg.KeepAliveSeconds) * time.Second,
 		cmds:              make(map[string]*exec.Cmd),
 	}
 
+	if err := sv.LoadAuthorizedKeys(); err != nil {
+		return nil, fmt.Errorf("failed to load public keys: %w", err)
+	}
+
 	var hostSigner gossh.Signer
-
-	if cfg.SshdConfigFile != "" {
-		sshdConfig, err := LoadSSHDConfig(cfg.SshdConfigFile)
+	if cfg.SshdConfig.HostKeyFile != "" {
+		keyData, err := os.ReadFile(cfg.SshdConfig.HostKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("invalid config file at %q:%v", cfg.SshdConfigFile, err)
+			return nil, fmt.Errorf("failed to read private key file: %w", err)
 		}
-		sv.sshdConfig = sshdConfig
 
-		if hostKeyFile, ok := sshdConfig["HostKey"]; ok {
-			keyData, err := os.ReadFile(hostKeyFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read private key file: %w", err)
-			}
-
-			// Decode the PEM block
-			block, _ := pem.Decode(keyData)
-			if block == nil {
-				return nil, fmt.Errorf("failed to decode PEM block containing private key:%v", block)
-			}
-
-			// Parse the private key
-			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse private key: %w", err)
-			}
-			signer, err := gossh.NewSignerFromKey(key)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create signer:%v", err)
-			}
-			hostSigner = signer
-			log.Info("Loaded host key from:", hostKeyFile)
+		// Decode the PEM block
+		block, _ := pem.Decode(keyData)
+		if block == nil {
+			return nil, fmt.Errorf("failed to decode PEM block containing private key:%v", block)
 		}
+
+		// Parse the private key
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		signer, err := gossh.NewSignerFromKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create signer:%v", err)
+		}
+		hostSigner = signer
+		log.Info("Loaded host key from:", cfg.SshdConfig.HostKeyFile)
 	} else {
 		log.Println("Generate a custom host key")
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -127,6 +125,7 @@ func New(ctx context.Context, cfg *config.SshConfig) (*Server, error) {
 
 			return &sshConn{conn, closeCallback, ctx}
 		},
+		PublicKeyHandler: sv.PubKeyHandler,
 		LocalPortForwardingCallback: func(_ ssh.Context, _ string, _ uint32) bool {
 			return true
 		},

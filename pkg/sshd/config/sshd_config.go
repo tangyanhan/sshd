@@ -1,4 +1,4 @@
-package sshd
+package config
 
 import (
 	"bufio"
@@ -8,19 +8,19 @@ import (
 	"strings"
 )
 
-type SshdConfig map[string]string
+type SshdConfigMap map[string]string
 
 var regSshdKVPair = regexp.MustCompile(`^(\w+)\s*(.*)\s*$`)
 
 // LoadSSHDConfig 加载并解析 sshd_config 文件
-func LoadSSHDConfig(filePath string) (SshdConfig, error) {
+func LoadSSHDConfig(filePath string) (SshdConfigMap, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("无法打开文件: %w", err)
+		return nil, fmt.Errorf("open %s failed: %w", filePath, err)
 	}
 	defer file.Close()
 
-	config := make(SshdConfig)
+	config := make(SshdConfigMap)
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
